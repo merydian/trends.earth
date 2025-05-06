@@ -13,6 +13,7 @@ from ..areaofinterest import AOI
 from ..jobs.models import Job
 from ..logger import log
 
+from qgis.core import QgsTask, QgsApplication, QgsMessageLog, Qgis
 
 def _prepare_land_cover_inputs(job: Job, area_of_interest: AOI) -> Path:
     # Select the initial and final bands from initial and final datasets
@@ -53,78 +54,74 @@ def compute_land_cover(
     class_codes = sorted([c.code for c in nesting.child.key])
     class_positions = [*range(1, len(class_codes) + 1)]
 
-    lc_change_worker = worker.StartWorker(
-        LandCoverChangeWorker,
-        "calculating land cover change",
+    task = LandCoverChangeTask("calculating land cover change",
         str(in_vrt),
         str(dataset_output_path),
         trans_matrix.get_list(),
         (class_codes, class_positions),
         nesting.child.get_multiplier(),
-        trans_matrix.get_persistence_list(),
-    )
+        trans_matrix.get_persistence_list(),)
 
-    if lc_change_worker.success:
-        lc_job.end_date = dt.datetime.now(dt.timezone.utc)
-        lc_job.progress = 100
-        bands = [
-            JobBand(
-                name="Land cover (degradation)",
-                metadata={
-                    "year_initial": lc_job.params["year_initial"],
-                    "year_final": lc_job.params["year_final"],
-                    "trans_matrix": LCTransitionDefinitionDeg.Schema().dumps(
-                        trans_matrix
-                    ),
-                    "nesting": LCLegendNesting.Schema().dumps(nesting),
-                },
-            ),
-            JobBand(
-                name="Land cover",
-                metadata={
-                    "year": lc_job.params["year_initial"],
-                    "nesting": LCLegendNesting.Schema().dumps(nesting),
-                },
-            ),
-            JobBand(
-                name="Land cover",
-                metadata={
-                    "year": lc_job.params["year_final"],
-                    "nesting": LCLegendNesting.Schema().dumps(nesting),
-                },
-            ),
-            JobBand(
-                name="Land cover transitions",
-                metadata={
-                    "year_initial": lc_job.params["year_initial"],
-                    "year_final": lc_job.params["year_final"],
-                    "nesting": LCLegendNesting.Schema().dumps(nesting),
-                },
-            ),
-        ]
-        lc_job.results = RasterResults(
-            name="land_cover",
-            uri=URI(uri=dataset_output_path),
-            rasters={
-                DataType.INT16.value: Raster(
-                    uri=URI(uri=dataset_output_path),
-                    bands=bands,
-                    datatype=DataType.INT16,
-                    filetype=RasterFileType.GEOTIFF,
+    QgsApplication.taskManager().addTask(task)
+
+    lc_job.end_date = dt.datetime.now(dt.timezone.utc)
+    lc_job.progress = 100
+    bands = [
+        JobBand(
+            name="Land cover (degradation)",
+            metadata={
+                "year_initial": lc_job.params["year_initial"],
+                "year_final": lc_job.params["year_final"],
+                "trans_matrix": LCTransitionDefinitionDeg.Schema().dumps(
+                    trans_matrix
                 ),
+                "nesting": LCLegendNesting.Schema().dumps(nesting),
             },
-        )
-    else:
-        raise RuntimeError("Error calculating land cover change.")
+        ),
+        JobBand(
+            name="Land cover",
+            metadata={
+                "year": lc_job.params["year_initial"],
+                "nesting": LCLegendNesting.Schema().dumps(nesting),
+            },
+        ),
+        JobBand(
+            name="Land cover",
+            metadata={
+                "year": lc_job.params["year_final"],
+                "nesting": LCLegendNesting.Schema().dumps(nesting),
+            },
+        ),
+        JobBand(
+            name="Land cover transitions",
+            metadata={
+                "year_initial": lc_job.params["year_initial"],
+                "year_final": lc_job.params["year_final"],
+                "nesting": LCLegendNesting.Schema().dumps(nesting),
+            },
+        ),
+    ]
+    lc_job.results = RasterResults(
+        name="land_cover",
+        uri=URI(uri=dataset_output_path),
+        rasters={
+            DataType.INT16.value: Raster(
+                uri=URI(uri=dataset_output_path),
+                bands=bands,
+                datatype=DataType.INT16,
+                filetype=RasterFileType.GEOTIFF,
+            ),
+        },
+    )
 
     return lc_job
 
 
-class LandCoverChangeWorker(worker.AbstractWorker):
+class LandCoverChangeTask(QgsTask):
     def __init__(
-        self, in_f, out_f, trans_matrix, class_recode, multiplier, persistence_remap
+        self, description, in_f, out_f, trans_matrix, class_recode, multiplier, persistence_remap
     ):
-        worker.AbstractWorker.__init__(self)
+        super().__init__(description, QgsTask.CanCancel)
         self.in_f = in_f
         self.out_f = out_f
         self.trans_matrix = trans_matrix
@@ -134,7 +131,18 @@ class LandCoverChangeWorker(worker.AbstractWorker):
         self.multiplier = multiplier
         self.persistence_remap = persistence_remap
 
-    def work(self):
+        self.total = 0
+        self.iterations = 0
+        self.exception = None
+
+    def run(self):
+        """
+        Here you implement your heavy lifting. This method should
+        periodically test for isCancelled() to gracefully abort.
+        This method MUST return True or False
+        raising exceptions will crash QGIS so we handle them internally and
+        raise them in self.finished
+        """
         ds_in = gdal.Open(self.in_f)
 
         band_initial = ds_in.GetRasterBand(1)
@@ -165,15 +173,11 @@ class LandCoverChangeWorker(worker.AbstractWorker):
                 rows = ysize - y
 
             for x in range(0, xsize, x_block_size):
-                if self.killed:
-                    log(
-                        "Processing killed by user after processing {} out of {} blocks.".format(
-                            y, ysize
-                        )
-                    )
+                if self.isCanceled():
+                    os.remove(self.out_f)
+                    return False
 
-                    break
-                self.progress.emit(
+                self.setProgress(
                     100 * (float(y) + (float(x) / xsize) * y_block_size) / ysize
                 )
 
@@ -219,9 +223,41 @@ class LandCoverChangeWorker(worker.AbstractWorker):
 
                 blocks += 1
 
-        if self.killed:
-            os.remove(self.out_f)
+        return True
 
-            return None
+    def finished(self, result):
+        """
+        This method is automatically called when self.run returns.
+        result is the return value from self.run.
+        This function is automatically called when the task has completed (
+        successfully or otherwise). You just implement finished() to do
+        whatever
+        follow up stuff should happen after the task is complete. finished is
+        always called from the main thread, so it's safe to do GUI
+        operations and raise Python exceptions here.
+        """
+        if result:
+            log(
+                'Task "{name}" completed\n' \
+                'Total: {total} ( with {iterations} iterations)'.format(
+                    name=self.description(),
+                    total=self.total,
+                    iterations=self.iterations), Qgis.Success)
         else:
-            return True
+            if self.exception is None:
+                log(
+                    'Task "{name}" not successful but without exception ' \
+                    '(probably the task was manually canceled by the '
+                    'user)'.format(
+                        name=self.description()), Qgis.Warning)
+            else:
+                log(
+                    'Task "{name}" Exception: {exception}'.format(
+                        name=self.description(), exception=self.exception), Qgis.Critical)
+                raise self.exception
+
+    def cancel(self):
+        log(
+            'Task "{name}" was cancelled'.format(name=self.description()), Qgis.Info)
+        super().cancel()
+
