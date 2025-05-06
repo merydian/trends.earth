@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import qgis.core
+from qgis.core import QgsSettings, QgsTask
 import qgis.gui
 from osgeo import gdal
 from qgis.PyQt import QtCore, QtGui, QtWidgets, uic
@@ -410,7 +410,7 @@ class DlgCalculateBase(QtWidgets.QDialog):
         self._firstShowEvent = True
         self.reset_tab_on_showEvent = True
         self.canvas = iface.mapCanvas()
-        self.settings = qgis.core.QgsSettings()
+        self.settings = QgsSettings()
 
         self.admin_bounds_key = download.get_admin_bounds()
 
