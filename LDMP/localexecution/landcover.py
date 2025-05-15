@@ -229,35 +229,29 @@ class LandCoverChangeTask(QgsTask):
         """
         This method is automatically called when self.run returns.
         result is the return value from self.run.
-        This function is automatically called when the task has completed (
-        successfully or otherwise). You just implement finished() to do
-        whatever
-        follow up stuff should happen after the task is complete. finished is
-        always called from the main thread, so it's safe to do GUI
+        This function is automatically called when the task has completed
+        (successfully or otherwise). You just implement finished() to do
+        whatever follow up stuff should happen after the task is complete.
+        finished is always called from the main thread, so it's safe to do GUI
         operations and raise Python exceptions here.
         """
         if result:
-            log(
-                'Task "{name}" completed\n' \
-                'Total: {total} ( with {iterations} iterations)'.format(
-                    name=self.description(),
-                    total=self.total,
-                    iterations=self.iterations), Qgis.Success)
+            log(f'Task "{self.description()}" completed', Qgis.Success)
         else:
             if self.exception is None:
                 log(
-                    'Task "{name}" not successful but without exception ' \
-                    '(probably the task was manually canceled by the '
-                    'user)'.format(
-                        name=self.description()), Qgis.Warning)
+                    f'Task "{self.description()}" not successful but without exception '
+                    '(probably the task was manually canceled by the user)',
+                    Qgis.Warning
+                )
             else:
                 log(
-                    'Task "{name}" Exception: {exception}'.format(
-                        name=self.description(), exception=self.exception), Qgis.Critical)
+                    f'Task "{self.description()}" Exception: {self.exception}',
+                    Qgis.Critical
+                )
                 raise self.exception
 
     def cancel(self):
-        log(
-            'Task "{name}" was cancelled'.format(name=self.description()), Qgis.Info)
+        log(f'Task "{self.description()}" was cancelled', Qgis.Info)
         super().cancel()
 
