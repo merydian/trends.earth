@@ -143,87 +143,92 @@ class LandCoverChangeTask(QgsTask):
         raising exceptions will crash QGIS so we handle them internally and
         raise them in self.finished
         """
-        ds_in = gdal.Open(self.in_f)
+        try:
+            ds_in = gdal.Open(self.in_f)
 
-        band_initial = ds_in.GetRasterBand(1)
-        band_final = ds_in.GetRasterBand(2)
+            band_initial = ds_in.GetRasterBand(1)
+            band_final = ds_in.GetRasterBand(2)
 
-        block_sizes = band_initial.GetBlockSize()
-        x_block_size = block_sizes[0]
-        y_block_size = block_sizes[1]
-        xsize = band_initial.XSize
-        ysize = band_initial.YSize
+            block_sizes = band_initial.GetBlockSize()
+            x_block_size = block_sizes[0]
+            y_block_size = block_sizes[1]
+            xsize = band_initial.XSize
+            ysize = band_initial.YSize
 
-        driver = gdal.GetDriverByName("GTiff")
-        ds_out = driver.Create(
-            self.out_f, xsize, ysize, 4, gdal.GDT_Int16, ["COMPRESS=LZW"]
-        )
-        src_gt = ds_in.GetGeoTransform()
-        ds_out.SetGeoTransform(src_gt)
-        out_srs = osr.SpatialReference()
-        out_srs.ImportFromWkt(ds_in.GetProjectionRef())
-        ds_out.SetProjection(out_srs.ExportToWkt())
+            driver = gdal.GetDriverByName("GTiff")
+            ds_out = driver.Create(
+                self.out_f, xsize, ysize, 4, gdal.GDT_Int16, ["COMPRESS=LZW"]
+            )
+            src_gt = ds_in.GetGeoTransform()
+            ds_out.SetGeoTransform(src_gt)
+            out_srs = osr.SpatialReference()
+            out_srs.ImportFromWkt(ds_in.GetProjectionRef())
+            ds_out.SetProjection(out_srs.ExportToWkt())
 
-        blocks = 0
+            blocks = 0
 
-        for y in range(0, ysize, y_block_size):
-            if y + y_block_size < ysize:
-                rows = y_block_size
-            else:
-                rows = ysize - y
-
-            for x in range(0, xsize, x_block_size):
-                if self.isCanceled():
-                    os.remove(self.out_f)
-                    return False
-
-                self.setProgress(
-                    100 * (float(y) + (float(x) / xsize) * y_block_size) / ysize
-                )
-
-                if x + x_block_size < xsize:
-                    cols = x_block_size
+            for y in range(0, ysize, y_block_size):
+                if y + y_block_size < ysize:
+                    rows = y_block_size
                 else:
-                    cols = xsize - x
+                    rows = ysize - y
 
-                a_i = band_initial.ReadAsArray(x, y, cols, rows)
-                a_f = band_final.ReadAsArray(x, y, cols, rows)
+                for x in range(0, xsize, x_block_size):
+                    if self.isCanceled():
+                        os.remove(self.out_f)
+                        return False
 
-                ds_out.GetRasterBand(2).WriteArray(a_i, x, y)
-                ds_out.GetRasterBand(3).WriteArray(a_f, x, y)
+                    self.setProgress(
+                        100 * (float(y) + (float(x) / xsize) * y_block_size) / ysize
+                    )
 
-                # Recode bands from raw codes to ordinal values prior to
-                # calculating transitions
-                for value, replacement in zip(
-                    self.class_recode[0], self.class_recode[1]
-                ):
-                    a_i[a_i == int(value)] = int(replacement)
-                    a_f[a_f == int(value)] = int(replacement)
+                    if x + x_block_size < xsize:
+                        cols = x_block_size
+                    else:
+                        cols = xsize - x
 
-                a_tr = a_i * self.multiplier + a_f
-                a_tr[(a_i < 1) | (a_f < 1)] < -32768
+                    a_i = band_initial.ReadAsArray(x, y, cols, rows)
+                    a_f = band_final.ReadAsArray(x, y, cols, rows)
 
-                a_deg = a_tr.copy()
+                    ds_out.GetRasterBand(2).WriteArray(a_i, x, y)
+                    ds_out.GetRasterBand(3).WriteArray(a_f, x, y)
 
-                for value, replacement in zip(
-                    self.trans_matrix[0], self.trans_matrix[1]
-                ):
-                    a_deg[a_deg == int(value)] = int(replacement)
+                    # Recode bands from raw codes to ordinal values prior to
+                    # calculating transitions
+                    for value, replacement in zip(
+                        self.class_recode[0], self.class_recode[1]
+                    ):
+                        a_i[a_i == int(value)] = int(replacement)
+                        a_f[a_f == int(value)] = int(replacement)
 
-                # Recode transitions so that persistence classes are easier to
-                # map
+                    a_tr = a_i * self.multiplier + a_f
+                    a_tr[(a_i < 1) | (a_f < 1)] < -32768
 
-                for value, replacement in zip(
-                    self.persistence_remap[0], self.persistence_remap[1]
-                ):
-                    a_tr[a_tr == int(value)] = int(replacement)
+                    a_deg = a_tr.copy()
 
-                ds_out.GetRasterBand(1).WriteArray(a_deg, x, y)
-                ds_out.GetRasterBand(4).WriteArray(a_tr, x, y)
+                    for value, replacement in zip(
+                        self.trans_matrix[0], self.trans_matrix[1]
+                    ):
+                        a_deg[a_deg == int(value)] = int(replacement)
 
-                blocks += 1
+                    # Recode transitions so that persistence classes are easier to
+                    # map
 
-        return True
+                    for value, replacement in zip(
+                        self.persistence_remap[0], self.persistence_remap[1]
+                    ):
+                        a_tr[a_tr == int(value)] = int(replacement)
+
+                    ds_out.GetRasterBand(1).WriteArray(a_deg, x, y)
+                    ds_out.GetRasterBand(4).WriteArray(a_tr, x, y)
+
+                    blocks += 1
+
+            return True
+
+        except Exception as e:
+            self.exception = e
+            return False
 
     def finished(self, result):
         """
@@ -254,4 +259,3 @@ class LandCoverChangeTask(QgsTask):
     def cancel(self):
         log(f'Task "{self.description()}" was cancelled', Qgis.Info)
         super().cancel()
-
